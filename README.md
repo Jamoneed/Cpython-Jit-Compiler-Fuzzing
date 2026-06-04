@@ -36,7 +36,7 @@ The framework found a JIT-specific assertion failure in `unlink_executor` in `Py
 Phase 3 requires a manual patch to `Python/jit.c` and a CPython rebuild. All other phases run automatically via `run_all.sh`.
 
 ## Compatibility Changes
-Four compatibility issues in lafleur prevented it from working on CPython 3.15. All were diagnosed and resolved during this campaign:
+Four compatibility challenges in lafleur prevented it from working successfully on CPython 3.15. All were diagnosed and resolved during this campaign:
 
 1. **UOP regex** — CPython 3.15 appends register suffixes to optimized UOP names. Fixed in `coverage.py` line 45.
 2. **Missing UOP names** — Four new UOP names in CPython 3.15 were absent from lafleur's known set. Fixed in `uop_names.py`.
