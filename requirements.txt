@@ -1,0 +1,12 @@
+# CPython JIT Fuzzing — Python dependencies
+# Install into the venv created from your CPython debug build:
+#   source ~/fuzzing/lafleur_venv/bin/activate
+#   pip install -r requirements.txt
+
+# lafleur — install from source (see README Step 4)
+# git clone https://github.com/devdanzin/lafleur.git
+# pip install -e ./lafleur
+
+# lafleur's own dependencies (pulled automatically via pip install -e)
+fusil>=0.9
+psutil>=5.9.0
