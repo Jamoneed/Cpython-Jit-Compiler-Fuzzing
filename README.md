@@ -2,7 +2,7 @@
 
 Coverage-guided fuzzing of CPython's experimental Tier 2 JIT compiler using [lafleur](https://github.com/devdanzin/lafleur), plus a low-memory stress-testing framework for probing JIT allocation error paths.
 
-This repository contains all research artifacts from the thesis *Coverage-Guided Fuzzing of CPython's Experimental Tier 2 JIT Compiler: Infrastructure, Validation, and Memory-Pressure Characterization* (Hameed Sahib, UC Irvine, 2026).
+This repository contains all research artifacts from the thesis *Coverage-Guided Fuzzing of CPython's Experimental Tier 2 JIT Compiler: Infrastructure, Validation, and Memory-Pressure Characterization*.
 
 ---
 
