@@ -1,0 +1,8 @@
+{
+  "crash_type": "CrashType.C_ASSERTION",
+  "returncode": -6,
+  "signal_name": "SIGABRT",
+  "fingerprint": "ASSERT:Python/optimizer.c:790:jump_happened == (target_instr[1].cache & 1)",
+  "type": "ASSERT",
+  "timestamp": "20260320_011951"
+}
