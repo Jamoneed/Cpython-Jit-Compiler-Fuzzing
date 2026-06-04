@@ -2,7 +2,7 @@
 
 Coverage-guided fuzzing of CPython's experimental Tier 2 JIT compiler using [lafleur](https://github.com/devdanzin/lafleur), plus a low-memory stress-testing framework for probing JIT allocation error paths.
 
-This repository contains all research artifacts from the thesis *Coverage-Guided Fuzzing of CPython's Experimental Tier 2 JIT Compiler: Infrastructure, Validation, and Memory-Pressure Characterization* (Hameed Sahib, UC Irvine, 2026). The full thesis is in `docs/thesis.pdf`.
+This repository contains all research artifacts from the thesis *Coverage-Guided Fuzzing of CPython's Experimental Tier 2 JIT Compiler: Infrastructure, Validation, and Memory-Pressure Characterization*.
 
 ---
 
@@ -18,7 +18,6 @@ crashes/            Raw crash artifacts and reproduction details for both bugs f
   gh144681_lafleur/           lafleur campaign crash (gh-144681)
   unlink_executor_lowmem/     low-memory framework crash (unlink_executor)
 scripts/            Campaign launch script (launch_campaign.sh)
-docs/               Thesis PDF
 environment.md      Exact versions and build configs used in the research
 requirements.txt    Python dependencies for the lafleur venv
 ```
@@ -660,4 +659,3 @@ See `environment.md` for full details. Key versions:
 - [PR #144742](https://github.com/python/cpython/pull/144742) — upstream fix for gh-144681
 - [gh-136996](https://github.com/python/cpython/issues/136996) — related issue in same function as Bug 2
 - [CPython JIT internals](https://github.com/python/cpython/blob/main/InternalDocs/jit.md)
-- Thesis PDF: `docs/thesis.pdf`
