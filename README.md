@@ -2,7 +2,21 @@
 
 Coverage-guided fuzzing of CPython's experimental Tier 2 JIT compiler using [lafleur](https://github.com/devdanzin/lafleur), plus a low-memory stress-testing framework for probing JIT allocation error paths.
 
-This repository contains all research artifacts from the thesis *Coverage-Guided Fuzzing of CPython's Experimental Tier 2 JIT Compiler: Infrastructure, Validation, and Memory-Pressure Characterization*.
+This repository contains all research artifacts from the thesis *Coverage-Guided Fuzzing of CPython's Experimental Tier 2 JIT Compiler: Infrastructure, Validation, and Memory-Pressure Characterization* (Hameed Sahib, UC Irvine, 2026).
+
+---
+
+## Set your paths
+
+Set these once before running any commands in this README:
+
+```bash
+export CPYTHON_DIR=~/fuzzing/cpython      # where you cloned and built CPython
+export CPYTHON=$CPYTHON_DIR/python        # the debug+JIT binary
+export VENV=~/fuzzing/lafleur_venv        # lafleur virtualenv
+export CAMPAIGN_DIR=~/fuzzing/campaign1   # campaign working directory
+export REPO=$(pwd)                        # root of this repo (after cloning)
+```
 
 ---
 
@@ -35,16 +49,16 @@ Two JIT-specific bugs were found during this research. Full crash artifacts, rep
 | Assertion | `jump_happened == (target_instr[1].cache & 1)` |
 | File | `Python/optimizer.c:790` |
 | Signal | SIGABRT, exit code -6 |
-| Affected build | CPython commit `6908372fb81` (3.15.0a6+, March 2, 2026) |
-| Fixed by | PR #144742, commit `c32e264227b` |
+| Found on | CPython commit `6908372fb81` (3.15.0a6+, March 2, 2026) |
 | Found by | lafleur `debug-1` instance, March 20, 2026 |
+| Fixed by | PR #144742, confirmed clean on commit `c32e264227b` |
 
 **Quick reproduction** (requires build at `6908372fb81`):
 ```bash
-PYTHON_JIT=1 ~/fuzzing/cpython/python reproducers/gh144681_crash.py
+PYTHON_JIT=1 $CPYTHON reproducers/gh144681_crash.py
 # Expected: SIGABRT, optimizer.c:790 assertion failure
 
-PYTHON_JIT=0 ~/fuzzing/cpython/python reproducers/gh144681_crash.py
+PYTHON_JIT=0 $CPYTHON reproducers/gh144681_crash.py
 # Expected: clean exit, code 0
 ```
 
@@ -55,9 +69,9 @@ PYTHON_JIT=0 ~/fuzzing/cpython/python reproducers/gh144681_crash.py
 | Assertion | `idx >= 0 && (size_t)idx < interp->executor_count` |
 | Function | `unlink_executor`, `Python/optimizer.c` |
 | Signal | SIGABRT |
-| Affected build | CPython commit `c32e264227b` (April 1, 2026) |
-| No longer reproduces | After commit `d0e7c6acc93` (April 14, 2026) |
+| Found on | CPython commit `c32e264227b` (April 1, 2026) |
 | Reproduction rate | ~15–18% with `PYTHON_JIT=1`, 0% with `PYTHON_JIT=0` |
+| No longer reproduces | After commit `d0e7c6acc93` (April 14, 2026) |
 | Related issue | gh-136996 (same function, different assertion) |
 
 **Quick reproduction** (requires build at `c32e264227b` and libfiu):
@@ -65,7 +79,7 @@ PYTHON_JIT=0 ~/fuzzing/cpython/python reproducers/gh144681_crash.py
 for i in $(seq 1 50); do
   result=$(PYTHON_JIT=1 fiu-run -x \
     -c "enable_random name=posix/mm/mmap,probability=0.5" \
-    ~/fuzzing/cpython/python \
+    $CPYTHON \
     crashes/unlink_executor_lowmem/reproducer.py 2>&1)
   if echo "$result" | grep -qE "Assertion|Aborted"; then
     echo "RUN $i: CRASH"; echo "$result"; break
@@ -73,12 +87,6 @@ for i in $(seq 1 50); do
     echo "RUN $i: clean"
   fi
 done
-
-# JIT-specificity check — should be clean 100% of the time:
-PYTHON_JIT=0 fiu-run -x \
-  -c "enable_random name=posix/mm/mmap,probability=0.5" \
-  ~/fuzzing/cpython/python \
-  crashes/unlink_executor_lowmem/reproducer.py
 ```
 
 ---
@@ -92,30 +100,44 @@ Tested on Ubuntu 22.04 (x86-64). Install required packages:
 ```bash
 sudo apt update
 sudo apt install -y \
-  build-essential git tmux wget clang \
+  build-essential git tmux wget \
   libssl-dev zlib1g-dev libbz2-dev libreadline-dev \
   libsqlite3-dev libffi-dev liblzma-dev uuid-dev \
-  libfiu-dev fiu-utils
+  libfiu-dev fiu-utils python3.11 libzstd-dev
+```
+
+CPython 3.15's JIT build tool requires **Python 3.11+** and **clang-21**. Install clang-21:
+
+```bash
+wget https://apt.llvm.org/llvm.sh
+chmod +x llvm.sh
+sudo ./llvm.sh 21
+```
+
+Verify:
+
+```bash
+python3.11 --version
+clang-21 --version
 ```
 
 ### Step 2: Clone CPython and build a debug+JIT binary
 
-lafleur requires a CPython debug build with the experimental JIT enabled. This is not your system Python — you build it from source.
+**Important:** deactivate any active virtualenv before building. The venv Python will interfere with the JIT build tool.
 
 ```bash
-mkdir -p ~/fuzzing
-cd ~/fuzzing
-git clone https://github.com/python/cpython.git
-cd cpython
+deactivate   # if a venv is active
 ```
 
-To reproduce the exact campaign results, check out the campaign commit:
+Clone CPython:
 
 ```bash
-git checkout c32e264227b
+mkdir -p $CPYTHON_DIR
+cd $CPYTHON_DIR
+git clone https://github.com/python/cpython.git .
 ```
 
-To reproduce gh-144681 specifically, check out the crashing build:
+Check out the campaign build:
 
 ```bash
 git checkout 6908372fb81
@@ -124,14 +146,16 @@ git checkout 6908372fb81
 Build:
 
 ```bash
-./configure --with-pydebug --enable-experimental-jit
+./configure --with-pydebug --enable-experimental-jit \
+  PYTHON_FOR_BUILD=/usr/bin/python3.11
 make -j$(nproc)
 ```
 
 Confirm the binary works:
 
 ```bash
-./python -VV
+$CPYTHON -VV
+$CPYTHON -c "import _zstd; print('zstd ok')"
 ```
 
 ### Step 3: Create a virtualenv from the CPython build
@@ -139,74 +163,81 @@ Confirm the binary works:
 lafleur must run inside a venv created from the same CPython build you are fuzzing:
 
 ```bash
-./python -m venv ~/fuzzing/lafleur_venv
-source ~/fuzzing/lafleur_venv/bin/activate
+$CPYTHON -m venv $VENV
+source $VENV/bin/activate
 ```
 
 ### Step 4: Install lafleur
 
 ```bash
-cd ~/fuzzing
-git clone https://github.com/devdanzin/lafleur.git
-cd lafleur
+git clone https://github.com/devdanzin/lafleur.git ~/fuzzing/lafleur
+cd ~/fuzzing/lafleur
+git checkout e5c1d6c   # pinned to campaign version (February 20, 2026)
 pip install -e .
 ```
 
-Confirm the install:
+Confirm:
 
 ```bash
 lafleur --help
 lafleur-report --help
-lafleur-campaign --help
 ```
 
 ### Step 5: Tune the JIT threshold and rebuild CPython
 
-lafleur includes a tuning utility that lowers CPython's JIT compilation threshold in the C headers. This makes the JIT compile sooner during fuzzing — without it, short seed programs may never trigger JIT compilation at all.
+lafleur includes a tuning utility that lowers CPython's JIT compilation threshold. Without it, short seed programs may never trigger JIT compilation.
 
 ```bash
-lafleur-jit-tweak ~/fuzzing/cpython
-```
-
-Then rebuild:
-
-```bash
-cd ~/fuzzing/cpython
+deactivate
+lafleur-jit-tweak $CPYTHON_DIR
+cd $CPYTHON_DIR
+./configure --with-pydebug --enable-experimental-jit \
+  PYTHON_FOR_BUILD=/usr/bin/python3.11
 make -j$(nproc)
+source $VENV/bin/activate
 ```
 
-The campaign used a threshold of 63 (down from the default ~4,096). Verify the JIT fires on a seed:
+The campaign used a threshold of 63 (down from the default ~4,096). Verify the JIT fires:
 
 ```bash
-PYTHON_JIT=1 PYTHON_LLTRACE=1 ~/fuzzing/cpython/python seeds/seed_math.py 2>&1 | head -30
+PYTHON_JIT=1 PYTHON_LLTRACE=1 $CPYTHON $REPO/seeds/seed_math.py 2>&1 | head -30
 ```
 
-You should see lines like `ADD_TO_TRACE: _BINARY_OP_ADD_INT`. If you see nothing, the threshold was not applied — re-run `lafleur-jit-tweak` and rebuild.
+You should see lines like `ADD_TO_TRACE: _BINARY_OP_ADD_INT`. If you see nothing, re-run `lafleur-jit-tweak` and rebuild.
 
 ### Step 6: Apply the CPython 3.15 compatibility patches to lafleur
 
-**Required for CPython 3.15 or later.** Without these patches lafleur silently reports zero UOP-edge coverage — the fuzzer appears to run but all coverage data is discarded.
+**Required for CPython 3.15 or later.** Without these patches lafleur silently reports zero UOP-edge coverage.
 
 ---
 
 #### Patch 1 — UOP regex: register allocation suffixes
 
-CPython 3.15 introduced register allocation for the Tier 2 JIT. UOP names in trace output now include register suffixes, e.g. `_ITER_NEXT_RANGE_r23`. lafleur's original regex stopped matching at the lowercase `r`, silently dropping every UOP name from an optimized trace.
+CPython 3.15 introduced register allocation suffixes on UOP names in trace output, e.g. `_ITER_NEXT_RANGE_r23`. lafleur's original regex stopped matching at the lowercase `r`, silently dropping every UOP name from an optimized trace.
 
-Open `~/fuzzing/lafleur/lafleur/coverage.py`, line 45. Change:
+Use a script to apply — avoids paste issues in the terminal:
 
-```python
-# OLD
-UOP_REGEX = re.compile(
-    r"(?:ADD_TO_TRACE|OPTIMIZED): (_[A-Z0-9_]+)(?=\s|\n|$)")
+```bash
+cat > /tmp/patch1.py << 'SCRIPT'
+import os
+path = os.path.expanduser('~/fuzzing/lafleur/lafleur/coverage.py')
+with open(path, 'r') as f:
+    content = f.read()
+content = content.replace(
+    'UOP_REGEX = re.compile(r"(?:ADD_TO_TRACE|OPTIMIZED): (_[A-Z0-9_]+)(?=\\s|\\n|$)")',
+    'UOP_REGEX = re.compile(r"(?:ADD_TO_TRACE|OPTIMIZED): (_[A-Z0-9_]+?)(?:_r\\d+)?(?=\\s|\\(|\\n|$)")'
+)
+with open(path, 'w') as f:
+    f.write(content)
+print("Done")
+SCRIPT
+python3 /tmp/patch1.py
 ```
 
-to:
-
-```python
-# NEW
-UOP_REGEX = re.compile(
-    r"(?:ADD_TO_TRACE|OPTIMIZED): (_[A-Z0-9_]+?)(?:_r\d+)?(?=\s|\(|\n|$)")
+Verify:
+```bash
+grep -n "UOP_REGEX" ~/fuzzing/lafleur/lafleur/coverage.py | head -1
+# Should contain: (?:_r\d+)?
 ```
 
 ---
@@ -215,22 +246,36 @@ UOP_REGEX = re.compile(
 
 Four UOP names introduced in CPython 3.15 were absent from lafleur's recognition table. Any edge chain containing one of these was silently discarded even after Patch 1.
 
-Open `~/fuzzing/lafleur/lafleur/uop_names.py`. Add to the `UOP_NAMES` set:
+```bash
+cat > /tmp/patch2.py << 'SCRIPT'
+import os
+path = os.path.expanduser('~/fuzzing/lafleur/lafleur/uop_names.py')
+with open(path, 'r') as f:
+    content = f.read()
+content = content.replace(
+    '    "_YIELD_VALUE",\n}',
+    '    "_YIELD_VALUE",\n    "_SWAP_FAST",\n    "_SWAP_FAST_0",\n    "_SWAP_FAST_1",\n    "_SPILL_OR_RELOAD",\n}'
+)
+with open(path, 'w') as f:
+    f.write(content)
+print("Done")
+SCRIPT
+python3 /tmp/patch2.py
+```
 
-```python
-"_SWAP_FAST",
-"_SWAP_FAST_0",
-"_SWAP_FAST_1",
-"_SPILL_OR_RELOAD",
+Verify:
+```bash
+grep -n "SWAP_FAST\|SPILL_OR_RELOAD" ~/fuzzing/lafleur/lafleur/uop_names.py
+# Should show 4 lines inside the set, before the closing }
+python3 -c "from lafleur.uop_names import UOP_NAMES; print('ok', len(UOP_NAMES))"
+# Expected: ok 350
 ```
 
 ---
 
 #### Patch 3 — Harness marker requirement for hand-written seeds
 
-lafleur's coverage parser only accumulates UOP edges after seeing the string `[f1]` printed to stderr. Without it `current_harness_id` is never set and all coverage is silently discarded.
-
-The seeds in this repo already include the marker. Any new seeds you write must prepend:
+lafleur's coverage parser only accumulates UOP edges after seeing `[f1]` printed to stderr. The seeds in this repo already include the marker. Any new seeds you write must prepend:
 
 ```python
 import sys
@@ -239,84 +284,98 @@ print('[f1] STRATEGY: fuzzing', file=sys.stderr)
 
 ---
 
-#### Patch 4 — Remove `--session-fuzz` from all instances
+#### Patch 4 — Remove `--session-fuzz`
 
-Session-fuzz mode runs scripts via `exec()` in a shared interpreter process. CPython's JIT logging flags are evaluated at interpreter startup, so scripts run later produce no trace output and coverage is always zero for session-fuzz instances on CPython 3.15.
-
-`scripts/launch_campaign.sh` in this repo has `--session-fuzz` removed from all instances. Do not add it back unless you switch to a non-log-based coverage mechanism.
+Session-fuzz mode produces zero coverage on CPython 3.15 because JIT logging flags are evaluated at interpreter startup, not at `exec()` call time. `scripts/launch_campaign.sh` in this repo has `--session-fuzz` removed. Do not add it back.
 
 ---
 
 ### Step 7: Validate the coverage pipeline before a long run
 
-Always do this first. A broken pipeline looks identical to a working one.
+Seeds go into `$CAMPAIGN_DIR/corpus/jit_interesting_tests/`. lafleur picks them up automatically when run from `$CAMPAIGN_DIR`.
 
 ```bash
-source ~/fuzzing/lafleur_venv/bin/activate
-mkdir -p /tmp/test_corpus
+mkdir -p $CAMPAIGN_DIR/corpus/jit_interesting_tests
+cp $REPO/seeds/*.py $CAMPAIGN_DIR/corpus/jit_interesting_tests/
 
+cd $CAMPAIGN_DIR
 lafleur \
-  --target-python ~/fuzzing/cpython/python \
-  --corpus-dir /tmp/test_corpus \
-  --seed-dir seeds/ \
-  --runs 1 \
-  --max-iterations 50
-
-lafleur-report /tmp/test_corpus
+  --target-python $CPYTHON \
+  --min-corpus-files 20 \
+  --dynamic-runs \
+  --runs 3 \
+  --instance-name test-1
 ```
 
-After 50 iterations `Global UOP Edges` must be nonzero (expect 200–500). If it is still 0 work through Patches 1–4 before proceeding.
+Let it run 1–2 minutes, then `Ctrl+C` and check:
+
+```bash
+lafleur-report $CAMPAIGN_DIR
+```
+
+`Global Edges` must be nonzero (expect 500–1500 in the first few minutes). If still 0, work through Patches 1–4.
 
 ---
 
-### Step 8: Set up additional build configurations (optional but recommended)
+### Step 8: Set up additional build configurations (optional)
 
-The campaign used six instances across four build types. Each needs its own CPython binary.
+The campaign used six instances across four build types. Each needs its own CPython binary. Always `deactivate` before building.
 
-**ASAN build** (detects heap corruption and use-after-free):
+**ASAN build:**
 
 ```bash
-mkdir -p ~/fuzzing/cpython-asan && cd ~/fuzzing/cpython-asan
+deactivate
+mkdir -p $CPYTHON_DIR-asan && cd $CPYTHON_DIR-asan
 git clone https://github.com/python/cpython.git .
-git checkout c32e264227b
+git checkout 6908372fb81
 ./configure --with-pydebug --enable-experimental-jit \
-  CC=clang \
+  CC=clang-21 \
   CFLAGS="-fsanitize=address -fno-omit-frame-pointer" \
-  LDFLAGS="-fsanitize=address"
+  LDFLAGS="-fsanitize=address" \
+  PYTHON_FOR_BUILD=/usr/bin/python3.11
 make -j$(nproc)
+source $VENV/bin/activate
 ```
 
-**UBSAN build** (detects undefined behavior in CPython's C code):
+**UBSAN build:**
 
 ```bash
-mkdir -p ~/fuzzing/cpython-ubsan && cd ~/fuzzing/cpython-ubsan
+deactivate
+mkdir -p $CPYTHON_DIR-ubsan && cd $CPYTHON_DIR-ubsan
 git clone https://github.com/python/cpython.git .
-git checkout c32e264227b
+git checkout 6908372fb81
 ./configure --with-pydebug --enable-experimental-jit \
-  CC=clang \
+  CC=clang-21 \
   CFLAGS="-fsanitize=undefined -fno-omit-frame-pointer" \
-  LDFLAGS="-fsanitize=undefined"
+  LDFLAGS="-fsanitize=undefined" \
+  PYTHON_FOR_BUILD=/usr/bin/python3.11
 make -j$(nproc)
+source $VENV/bin/activate
 ```
 
-**Free-threaded build** (tests behavior without the GIL):
+**Free-threaded build:**
 
 ```bash
-mkdir -p ~/fuzzing/cpython-ft && cd ~/fuzzing/cpython-ft
+deactivate
+mkdir -p $CPYTHON_DIR-ft && cd $CPYTHON_DIR-ft
 git clone https://github.com/python/cpython.git .
-git checkout c32e264227b
-./configure --with-pydebug --enable-experimental-jit --disable-gil
+git checkout 6908372fb81
+./configure --with-pydebug --enable-experimental-jit --disable-gil \
+  PYTHON_FOR_BUILD=/usr/bin/python3.11
 make -j$(nproc)
+source $VENV/bin/activate
 ```
 
-Run `lafleur-jit-tweak` on each build after cloning, then rebuild:
+Run `lafleur-jit-tweak` on each build after cloning:
 
 ```bash
-source ~/fuzzing/lafleur_venv/bin/activate
-for dir in ~/fuzzing/cpython-asan ~/fuzzing/cpython-ubsan ~/fuzzing/cpython-ft; do
+deactivate
+for dir in $CPYTHON_DIR-asan $CPYTHON_DIR-ubsan $CPYTHON_DIR-ft; do
   lafleur-jit-tweak $dir
-  cd $dir && make -j$(nproc)
+  cd $dir && ./configure --with-pydebug --enable-experimental-jit \
+    PYTHON_FOR_BUILD=/usr/bin/python3.11 && make -j$(nproc)
 done
+source $VENV/bin/activate
 ```
 
 ---
@@ -324,8 +383,8 @@ done
 ### Step 9: Place seeds into the corpus
 
 ```bash
-mkdir -p ~/fuzzing/campaign1/corpus/jit_interesting_tests
-cp seeds/*.py ~/fuzzing/campaign1/corpus/jit_interesting_tests/
+mkdir -p $CAMPAIGN_DIR/corpus/jit_interesting_tests
+cp $REPO/seeds/*.py $CAMPAIGN_DIR/corpus/jit_interesting_tests/
 ```
 
 | Seed file | JIT behavior targeted |
@@ -349,24 +408,25 @@ cp seeds/*.py ~/fuzzing/campaign1/corpus/jit_interesting_tests/
 | `seed_gc_pressure.py` | JIT and GC interaction, reference cycles |
 | `seed_async_generators.py` | Async/await UOPs, asyncio event loop |
 
-Each seed has a function named `uop_harness_f1` containing a `for i in range(300)` loop with the `[f1]` harness marker printed to stderr at startup.
+Each seed has a function named `uop_harness_f1` with a `for i in range(300)` loop and the `[f1]` harness marker printed to stderr at startup.
 
 ---
 
-### Step 10: Set up a RAM disk (optional, for the fast instance)
+### Step 10: Set up a RAM disk (optional)
 
 ```bash
 sudo mkdir -p /mnt/fuzz_ram
 sudo mount -t tmpfs -o size=2G tmpfs /mnt/fuzz_ram
-mkdir -p /mnt/fuzz_ram/corpus /mnt/fuzz_ram/crashes
+mkdir -p /mnt/fuzz_ram/corpus/jit_interesting_tests
+cp $REPO/seeds/*.py /mnt/fuzz_ram/corpus/jit_interesting_tests/
 ```
 
-Back up crash files every two hours:
+Back up crashes every two hours:
 
 ```bash
 crontab -e
 # Add:
-0 */2 * * * cp -r /mnt/fuzz_ram/crashes ~/fuzzing/crash_backups/$(date +\%Y\%m\%d_\%H\%M\%S)/ 2>/dev/null
+0 */2 * * * cp -r $CAMPAIGN_DIR/crashes ~/fuzzing/crash_backups/$(date +\%Y\%m\%d_\%H\%M\%S)/ 2>/dev/null
 ```
 
 ---
@@ -374,9 +434,9 @@ crontab -e
 ### Step 11: Launch the full campaign
 
 ```bash
-cd ~/fuzzing/campaign1
-chmod +x ~/path/to/CPython-Bug-Hunting/scripts/launch_campaign.sh
-~/path/to/CPython-Bug-Hunting/scripts/launch_campaign.sh
+mkdir -p $CAMPAIGN_DIR
+chmod +x $REPO/scripts/launch_campaign.sh
+$REPO/scripts/launch_campaign.sh
 ```
 
 This opens a tmux session named `fuzz_campaign` with six windows:
@@ -390,8 +450,8 @@ This opens a tmux session named `fuzz_campaign` with six windows:
 | `ubsan-1` | UBSAN+JIT | Undefined behavior in JIT C code |
 | `ram-fast-1` | debug+JIT (tmpfs) | Breadth-first coverage exploration |
 
-Attach: `tmux attach -t fuzz_campaign`  
-Switch windows: `Ctrl+b` + window number  
+Attach: `tmux attach -t fuzz_campaign`
+Switch windows: `Ctrl+b` + window number
 Detach: `Ctrl+b d`
 
 ---
@@ -399,16 +459,16 @@ Detach: `Ctrl+b d`
 ### Step 12: Monitor the campaign
 
 ```bash
-source ~/fuzzing/lafleur_venv/bin/activate
+source $VENV/bin/activate
 
 # Single instance
-lafleur-report ~/fuzzing/campaign1/
+lafleur-report $CAMPAIGN_DIR/
 
 # HTML dashboard across all instances
-lafleur-campaign ~/fuzzing/campaign1/ --html ~/fuzzing/campaign_report.html
+lafleur-campaign $CAMPAIGN_DIR/ --html $CAMPAIGN_DIR/report.html
 ```
 
-Watch: `Global UOP Edges` (grows over time), `Corpus Files` (grows from 18 seed baseline), `Crashes Found`.
+Watch: `Global Edges` (grows over time), `Corpus Files` (grows from 18 seed baseline), `Crashes Found`.
 
 ---
 
@@ -419,14 +479,14 @@ Watch: `Global UOP Edges` (grows over time), `Corpus Files` (grows from 18 seed 
 **Step 2** — Confirm JIT-specificity:
 
 ```bash
-PYTHON_JIT=1 ~/fuzzing/cpython/python path/to/crash_script.py   # should crash
-PYTHON_JIT=0 ~/fuzzing/cpython/python path/to/crash_script.py   # should be clean
+PYTHON_JIT=1 $CPYTHON path/to/crash_script.py   # should crash
+PYTHON_JIT=0 $CPYTHON path/to/crash_script.py   # should be clean
 ```
 
 **Step 3** — Record the exact commit:
 
 ```bash
-~/fuzzing/cpython/python -VV
+$CPYTHON -VV
 ```
 
 **Step 4** — Search the [CPython issue tracker](https://github.com/python/cpython/issues) for the assertion text. If no issue exists, file one with the minimized reproducer, assertion text, commit hash, and JIT-on vs JIT-off output.
@@ -447,7 +507,7 @@ fiu-run --help   # verify
 ### Step 2: Build the fault injector libraries
 
 ```bash
-cd lowmem/injectors
+cd $REPO/lowmem/injectors
 chmod +x build.sh
 ./build.sh
 ```
@@ -455,17 +515,16 @@ chmod +x build.sh
 Or manually:
 
 ```bash
-gcc -shared -fPIC -o lowmem/injectors/fail_mmap.so lowmem/injectors/fail_mmap.c -ldl
-gcc -shared -fPIC -o lowmem/injectors/fail_malloc.so lowmem/injectors/fail_malloc.c -ldl
+gcc -shared -fPIC -o $REPO/lowmem/injectors/fail_mmap.so \
+    $REPO/lowmem/injectors/fail_mmap.c -ldl
+gcc -shared -fPIC -o $REPO/lowmem/injectors/fail_malloc.so \
+    $REPO/lowmem/injectors/fail_malloc.c -ldl
 ```
-
-`fail_mmap.so` intercepts `mmap()` calls for executable pages (JIT trace buffer allocations). Failure probability set via `MMAP_FAIL_RATE`.  
-`fail_malloc.so` intercepts `malloc()`, `realloc()`, `calloc()`. Failure probability set via `MALLOC_FAIL_RATE`.
 
 ### Step 3: Run the automated phases
 
 ```bash
-cd lowmem
+cd $REPO/lowmem
 chmod +x run_all.sh
 ./run_all.sh
 ```
@@ -486,22 +545,26 @@ chmod +x run_all.sh
 
 ### Step 4: Run Phase 8 manually (the phase that found the bug)
 
-First check out the affected build:
+Requires build at `c32e264227b`:
 
 ```bash
-cd ~/fuzzing/cpython
+deactivate
+cd $CPYTHON_DIR
 git checkout c32e264227b
+./configure --with-pydebug --enable-experimental-jit \
+  PYTHON_FOR_BUILD=/usr/bin/python3.11
 make -j$(nproc)
+source $VENV/bin/activate
 ```
 
-Then run the reproducer under libfiu mmap injection. Because the failure is nondeterministic (~15–18% hit rate), run in a loop:
+Run in a loop — failure is nondeterministic (~15–18% hit rate):
 
 ```bash
 for i in $(seq 1 50); do
   result=$(PYTHON_JIT=1 fiu-run -x \
     -c "enable_random name=posix/mm/mmap,probability=0.5" \
-    ~/fuzzing/cpython/python \
-    crashes/unlink_executor_lowmem/reproducer.py 2>&1)
+    $CPYTHON \
+    $REPO/crashes/unlink_executor_lowmem/reproducer.py 2>&1)
   if echo "$result" | grep -qE "Assertion|Aborted"; then
     echo "RUN $i: CRASH"
     echo "$result"
@@ -514,7 +577,7 @@ done
 
 The `-x` flag is required. Without it the failure does not reproduce.
 
-Expected crash output when it fires:
+Expected crash output:
 
 ```
 python: Python/optimizer.c:NNN:
@@ -529,27 +592,31 @@ Aborted (core dumped)
 # Crashes ~15-18% of runs:
 PYTHON_JIT=1 fiu-run -x \
   -c "enable_random name=posix/mm/mmap,probability=0.5" \
-  ~/fuzzing/cpython/python crashes/unlink_executor_lowmem/reproducer.py
+  $CPYTHON $REPO/crashes/unlink_executor_lowmem/reproducer.py
 
 # Clean 100% of the time:
 PYTHON_JIT=0 fiu-run -x \
   -c "enable_random name=posix/mm/mmap,probability=0.5" \
-  ~/fuzzing/cpython/python crashes/unlink_executor_lowmem/reproducer.py
+  $CPYTHON $REPO/crashes/unlink_executor_lowmem/reproducer.py
 ```
 
 ### Step 6: Confirm the fix
 
 ```bash
-cd ~/fuzzing/cpython
+deactivate
+cd $CPYTHON_DIR
 git checkout d0e7c6acc93
+./configure --with-pydebug --enable-experimental-jit \
+  PYTHON_FOR_BUILD=/usr/bin/python3.11
 make -j$(nproc)
+source $VENV/bin/activate
 
 CLEAN=0; CRASH=0
 for i in $(seq 1 100); do
   result=$(PYTHON_JIT=1 fiu-run -x \
     -c "enable_random name=posix/mm/mmap,probability=0.5" \
-    ~/fuzzing/cpython/python \
-    crashes/unlink_executor_lowmem/reproducer.py 2>&1)
+    $CPYTHON \
+    $REPO/crashes/unlink_executor_lowmem/reproducer.py 2>&1)
   if echo "$result" | grep -qE "Assertion|Aborted"; then
     CRASH=$((CRASH+1))
   else
@@ -567,15 +634,19 @@ echo "clean=$CLEAN crash=$CRASH"
 ### With the minimized reproducer (~15 lines)
 
 ```bash
-cd ~/fuzzing/cpython
+deactivate
+cd $CPYTHON_DIR
 git checkout 6908372fb81
+./configure --with-pydebug --enable-experimental-jit \
+  PYTHON_FOR_BUILD=/usr/bin/python3.11
 make -j$(nproc)
+source $VENV/bin/activate
 
 # Should SIGABRT, exit code -6:
-PYTHON_JIT=1 ~/fuzzing/cpython/python reproducers/gh144681_crash.py
+PYTHON_JIT=1 $CPYTHON $REPO/reproducers/gh144681_crash.py
 
 # Should exit cleanly:
-PYTHON_JIT=0 ~/fuzzing/cpython/python reproducers/gh144681_crash.py
+PYTHON_JIT=0 $CPYTHON $REPO/reproducers/gh144681_crash.py
 ```
 
 Expected crash output:
@@ -589,22 +660,24 @@ Aborted (core dumped)
 
 ### With the raw lafleur crash script
 
-The exact script lafleur produced is in `crashes/gh144681_lafleur/crash_script.py`. Same build requirement:
-
 ```bash
-PYTHON_JIT=1 ~/fuzzing/cpython/python crashes/gh144681_lafleur/crash_script.py
-PYTHON_JIT=0 ~/fuzzing/cpython/python crashes/gh144681_lafleur/crash_script.py
+PYTHON_JIT=1 $CPYTHON $REPO/crashes/gh144681_lafleur/crash_script.py
+PYTHON_JIT=0 $CPYTHON $REPO/crashes/gh144681_lafleur/crash_script.py
 ```
 
 ### Confirming the fix
 
 ```bash
-cd ~/fuzzing/cpython
+deactivate
+cd $CPYTHON_DIR
 git checkout c32e264227b
+./configure --with-pydebug --enable-experimental-jit \
+  PYTHON_FOR_BUILD=/usr/bin/python3.11
 make -j$(nproc)
+source $VENV/bin/activate
 
 # Should exit cleanly:
-PYTHON_JIT=1 ~/fuzzing/cpython/python reproducers/gh144681_crash.py
+PYTHON_JIT=1 $CPYTHON $REPO/reproducers/gh144681_crash.py
 echo "Exit code: $?"   # expected: 0
 ```
 
@@ -612,7 +685,7 @@ echo "Exit code: $?"   # expected: 0
 
 ## Campaign results (reference)
 
-Results from the corrected campaign on CPython 3.15.0a7+ commit `c32e264227b`:
+Results from the campaign on CPython commit `6908372fb81` (3.15.0a6+):
 
 | Metric | Value |
 |---|---|
@@ -622,7 +695,7 @@ Results from the corrected campaign on CPython 3.15.0a7+ commit `c32e264227b`:
 | Corpus size | 118 files (grew from 18 seeds in first hour) |
 | Max mutation tree depth | 40 |
 | Total executions (first hour) | ~4,025 |
-| Crashes found | 1 unique fingerprint (gh-144681) |
+| Crashes found | 1 unique fingerprint (gh-144681, found March 20, 2026) |
 | Top mutator | ArithmeticSpamMutator (754 selections) |
 | Second mutator | ComprehensiveFunctionMutator (143) |
 | Third mutator | HelperFunctionInjector (141) |
@@ -637,15 +710,18 @@ See `environment.md` for full details. Key versions:
 
 | Component | Version / config |
 |---|---|
-| OS | Ubuntu 22.04 (WSL2 on Windows 11), x86-64 |
-| CPython (campaign) | 3.15.0a7+, commit `c32e264227b` |
-| CPython (gh-144681 crash) | 3.15.0a6+, commit `6908372fb81` |
+| OS | Ubuntu 22.04 (x86-64) |
+| CPython (bug-finding campaign) | 3.15.0a6+, commit `6908372fb81` (March 2, 2026) |
+| CPython (gh-144681 fixed) | 3.15.0a7+, commit `c32e264227b` |
 | CPython (lowmem bug found) | commit `c32e264227b` (April 1, 2026) |
 | CPython (lowmem bug resolved) | commit `d0e7c6acc93` (April 14, 2026) |
 | CPython build flags | `--with-pydebug --enable-experimental-jit` |
 | JIT threshold | 63 (via `lafleur-jit-tweak`, default ~4,096) |
-| lafleur | `devdanzin/lafleur` main, 4 compatibility patches applied |
+| lafleur | commit `e5c1d6c` (February 20, 2026), 4 compatibility patches applied |
+| clang | clang-21 (required for JIT stencil generation) |
+| Python (build tool) | python3.11 (required by CPython 3.15 JIT build tool) |
 | libfiu | system package via `apt` (`libfiu-dev`, `fiu-utils`) |
+| libzstd | system package via `apt` (`libzstd-dev`) |
 | Campaign instances | 6 parallel (debug, diff, freethreaded, ASAN, UBSAN, RAM-disk) |
 | Hardware | 6 physical / 12 logical cores, 7.61 GB RAM, local SSD |
 
